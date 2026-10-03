@@ -65,6 +65,9 @@ INSTRUCTION_SHAPES = re.compile(
 )
 QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”|'[^'\n]{12,}'")
 WORD = re.compile(r"[a-z0-9]+")
+#: A free-text reply that reuses this share of a paragraph's wording is treated
+#: as a copy of it, and replaced by the exact paragraph.
+SNAP_RATIO = 0.5
 #: At most this many paragraphs are copied into one answer.
 MAX_PARAGRAPHS = 3
 MARKUP = re.compile(r"<!--.*?-->|\*\*", re.DOTALL)
@@ -305,7 +308,9 @@ class YourAgent:
             trace.append(TraceEvent("decision", "no usable reply twice; flagged refusal"))
             return AgentResult(answer=_refusal(), trace=tuple(trace))
         return AgentResult(
-            answer=self._checked(answer, question, retrieved_ids, passages, injected, trace),
+            answer=self._checked(
+                answer, question, retrieved_ids, passages, numbered, injected, trace
+            ),
             trace=tuple(trace),
         )
 
@@ -347,6 +352,7 @@ class YourAgent:
         question: str,
         retrieved_ids: set[str],
         passages: dict[str, str],
+        numbered: list[tuple[str, str]],
         injected: list[str],
         trace: list[TraceEvent],
     ) -> ResearchAnswer:
@@ -379,6 +385,22 @@ class YourAgent:
                     f"weakly supported citations dropped: {[c for c in kept if c not in final]}",
                 )
             )
+        # A model that copied whole paragraphs itself often drops spaces
+        # ("therefusal"): snap such a reply back to the source text, verbatim.
+        copied = [
+            (doc_id, text)
+            for doc_id, text in numbered
+            if doc_id in final
+            and _trigrams(text)
+            and len(_trigrams(answer.answer) & _trigrams(text)) >= SNAP_RATIO * len(_trigrams(text))
+        ]
+        if copied:
+            trace.append(
+                TraceEvent("decision", f"reply snapped to {len(copied)} source paragraph(s)")
+            )
+            text = " ".join(t for _, t in copied)
+            final = tuple(dict.fromkeys(doc_id for doc_id, _ in copied))
+            answer = ResearchAnswer(text, final, answer.confidence, answer.needs_human_review)
         trace.append(TraceEvent("decision", f"answered with citations {list(final)}"))
         return ResearchAnswer(answer.answer, final, answer.confidence, answer.needs_human_review)
 
