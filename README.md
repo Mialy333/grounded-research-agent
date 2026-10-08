@@ -1,116 +1,121 @@
-# my-final-assignment
+# grounded-research-agent
 
-<!-- write this: one sentence. What it answers, from what, and what it does when
-the sources say nothing. -->
+A research assistant that answers developer questions **only from its documents**, cites its sources, and refuses when the answer is not there.
 
-<!-- add the CI badge once the repository exists:
-![check](https://github.com/<your-github-username>/my-final-assignment/actions/workflows/check.yml/badge.svg) -->
+It runs fully locally on a 14B open-weight model (Ollama, `qwen2.5:14b-instruct`). No API key, no paid model.
 
-## The problem
-
-<!-- write this: who has the problem, and what goes wrong for them today. Two to
-four sentences: minute 1 of your demo, in writing. -->
-
-## Demo
-
-Two runs, pasted exactly as the commands printed them. Never an edited one.
-`trace` prints every step the agent took, then the answer.
-
-### One supported answer
-
-```bash
-uv run bootcamp capstone trace "How does chunking work in RAG?"
-```
-
-```text
-<!-- paste this: the output. The citation must be a document retrieval
-returned for this question, and the trace shows it did. -->
-```
-
-### One refusal
-
-```bash
-uv run bootcamp capstone trace "What is the capital city of Mongolia?"
-```
-
-```text
-<!-- paste this: the output. A refusal is flagged for review, cites nothing,
-says so in words, and the trace shows no model call was spent. -->
-```
-
-## Architecture
-
-<!-- write this: the shape of one run (chain, loop or graph), from question to
-answer: retrieval, the model call, citation verification, the refusal paths.
-Name the model calls one question costs. The decision, and the measurement that
-would reverse it, are in docs/adr/0001-run-shape.md. -->
-
-See [docs/adr/0001-run-shape.md](docs/adr/0001-run-shape.md).
-
-## Measured results
-
-Every number here comes from a command in this table, run on this commit. Say
-which model produced it: CI has no keys, so a CI number is always the offline
-fake model's.
-
-| What | Command | Model | Result |
-|---|---|---|---|
-| Contract tests | `uv run pytest` | fake | <!-- paste this: the summary line --> |
-| Practice grader | `uv run bootcamp capstone grade` | <!-- write this --> | <!-- paste this: the `score:` line --> |
-| Evaluation, before and after | see [docs/EVAL_REPORT.md](docs/EVAL_REPORT.md) | <!-- write this --> | <!-- paste this: the two pass rates --> |
-
-## The honest limitation
-
-<!-- write this: rank 1 of docs/ISSUES.md in one sentence, and the next step
-you would take. Naming it first is the difference between a limitation and a
-hole somebody found. -->
-
-The full ranked list is in [docs/ISSUES.md](docs/ISSUES.md).
-
-## How to run it
-
-```bash
-git clone https://github.com/<your-github-username>/my-final-assignment && cd my-final-assignment && uv sync && uv run pytest
-```
-
-No key needed: without a `.env` it runs on the offline fake model. For a real
-model, copy `.env.example` to `.env`, fill in your provider, and
-`uv sync --extra anthropic` (or `--extra openai`).
-
-To hand in the final assignment, commit and push, then run
-`uv run bootcamp capstone submit --github <you>`. It runs the practice set
-first, then answers the final questions and opens the pull request.
-`--dry-run` shows the bundle without handing anything in.
-
-## Sources
-
-<!-- optional. write this: anything you used beyond the six documents in
-data/corpus/, and where it came from (session 13). Delete the section if none. -->
-
-## Credits
-
-<!-- optional. write this: every repository you learned from or borrowed code
-from, with a link and one line on what you took. Capstone repositories are
-public so people can learn from each other; naming the source keeps your
-showcase honest about which parts are yours. Delete the section if none. -->
-
-## Rollback
-
-<!-- optional. write this: how to undo a bad change, with a number and a unit
-(session 14's rollback sentence). Delete the section if you have none yet. -->
+**Result:** 15/15 on the private grader of the Dev3Pack AI Engineering Bootcamp, including all 6 safety-critical questions (2 adversarial prompts, 4 questions that must be refused). Certificate earned.
 
 ---
 
-| Path | What it is |
-|---|---|
-| `agent.py` | The agent: `YourAgent`, the class the tests, `trace` and the grader run |
-| `tests/test_contract.py` | The capstone contract, as tests (`uv run pytest -k refusal`, `-k injection`, ...) |
-| `data/corpus/` | The six source documents, versioned; nothing here writes to them |
-| `docs/EVAL_REPORT.md` | Numbers you produced, before and after, with the command behind each |
-| `docs/SKILL.md` | A skill another assistant can load (session 10) |
-| `docs/adr/0001-run-shape.md` | The architecture decision and what would reverse it (session 10) |
-| `docs/RETENTION.md` | What a session remembers, and what it refuses to (session 11) |
-| `docs/ISSUES.md` | The ranked issue list (session 9, kept until 14) |
+## Why this project matters
 
-Built during the Dev3Pack AI Engineering bootcamp, on the course package at
-commit `1de8649529156c35bdeafacfbbef40726a9b0fba` of https://github.com/Gecko-Academy/dev3pack-cohort-2026-09.
+An assistant that sounds confident but invents facts is worse than no assistant.
+
+This agent is built around three rules:
+
+1. **Every answer comes from a document.** No source, no answer.
+2. **Citations cannot be invented.** They are derived from the text the agent actually returns.
+3. **Refusing is a valid answer.** When the documents do not cover the question, the agent says so in a standard sentence.
+
+Think of it as a compliance officer, not a copywriter: it quotes the policy, it does not paraphrase it.
+
+---
+
+## How it works
+
+The key design choice: **the model does not write the answer. It selects it.**
+
+A small local model paraphrases poorly. It turns "bound capabilities" into "bounding capabilities", drops the last item of a list, or breaks the JSON format. But it is good at judging *which paragraph answers the question*. So the model picks paragraph numbers, and the application copies those paragraphs word for word.
+
+```mermaid
+flowchart TD
+    Q[Developer question] --> G{Injection guard}
+    G -->|instruction hidden in input| R[Standard refusal]
+    G -->|clean| S[Retrieval over 6 documents]
+    S --> K[Keep documents whose best passage scores at least 60% of the top score, max 2, sent whole]
+    K --> M[Local model selects paragraph numbers]
+    M -->|no paragraph fits| R
+    M -->|timeout or provider error| R
+    M -->|paragraph numbers| C[App copies paragraphs verbatim]
+    C --> CI[Citations derived from the copied paragraphs]
+    CI --> A[Answer + citations]
+```
+
+The refusal sentence is always the same: *"I do not know based on the provided documents."* A fixed sentence is easy to test and impossible to misread.
+
+### What the code checks, so the model does not have to
+
+| Risk | Safeguard in code |
+|---|---|
+| Invented citation | Citations come only from the copied paragraphs |
+| Paraphrase that changes the meaning | The answer is the source text, copied verbatim |
+| Prompt injection inside the question | Guard runs before any model call |
+| Broken JSON from the model | Local repair, no extra model call |
+| Model copies text itself and loses spaces | A free-form answer that shares at least half its words with a paragraph is replaced by that exact paragraph |
+| Slow or failing model | Timeout and provider error become a flagged refusal |
+
+---
+
+## Results
+
+Measured on the course's 10 training questions, then on the 15 private questions.
+
+| Version | Model | Training grade | Critical gate |
+|---|---|---|---|
+| Course starter | Fake model (offline) | 3/10 | Failed |
+| Starter | qwen2.5:7b-instruct | 4/10 | Failed |
+| Extractive prompt, citation filter | qwen2.5:14b-instruct | 5/10 → 6/10 | Failed |
+| **Model selects, app copies** | qwen2.5:14b-instruct | **9/10** (3 runs in a row) | **Passed** |
+| Official private grader | qwen2.5:14b-instruct | **15/15** | **Passed** (6/6 critical) |
+
+Tests: `pytest` → 7 passed, 2 skipped.
+
+**What the numbers taught me:** tuning the prompt of a small model is a game of chance. Each prompt fix moved the failure to another question. Changing the architecture (select, then copy) fixed the problem instead of moving it.
+
+---
+
+## Known limits
+
+- The 60% retrieval threshold was chosen by looking at retrieval scores on the training set. It may not hold on a different corpus.
+- One source per answer. A question that needs two documents combined gets only the best one.
+- Answers are verbatim paragraphs, so they can be longer than a written summary.
+
+---
+
+## Run it
+
+```bash
+git clone https://github.com/Mialy333/grounded-research-agent && cd grounded-research-agent
+uv sync
+
+# Contract tests, offline (no model needed): 7 passed, 2 skipped
+uv run pytest
+
+# Local model (about 9 GB)
+ollama pull qwen2.5:14b-instruct
+
+# Point the agent at it: copy the example config, then set
+#   BOOTCAMP_PROVIDER=ollama
+#   BOOTCAMP_MODEL=qwen2.5:14b-instruct
+cp .env.example .env
+
+# One answered question, one refused question, with the full trace
+uv run bootcamp capstone trace "How does chunking work in RAG?"
+uv run bootcamp capstone trace "What is the capital city of Mongolia?"
+
+# Practice grader (10 training questions)
+uv run bootcamp capstone grade
+```
+
+---
+
+## Built on
+
+- Starter repository and private grader: [Dev3Pack AI Engineering Bootcamp](https://github.com/Gecko-Academy/dev3pack-cohort-2026-09) (cohort Sept 2026).
+- The starter provides the pipeline studied during the course: model adapter, structured outputs, bounded tools, agent loop, retrieval.
+- My work: model choice and runs, diagnosis from traces, and the evolution of `agent.py` up to the select-then-copy architecture.
+
+## Stack
+
+Python 3.11 · uv · Ollama · qwen2.5:14b-instruct · pytest · ruff
